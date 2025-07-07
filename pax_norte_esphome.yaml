@@ -1,3 +1,7 @@
+substitutions:
+  room_name: "Bath"
+  device_name: h-esp-pax-01-fan
+
 esphome:
   name: h-esp-pax-01-fan
   on_boot: 
@@ -17,7 +21,7 @@ web_server:
 
 api:
   encryption:
-    key: "YOUR API KEY"
+    key: "YOUR_API_KEY"
 ota:
   - platform: esphome
     password: !secret ota_password
@@ -28,20 +32,25 @@ wifi:
   use_address: h-esp-pax-01-fan.local
 
   ap:
-    ssid: "H-Esp-Pax Fallback Hotspot"
+    ssid: h_esp_pax_01_fan_Hotspot
     password: !secret ssid_password
 
 logger:
 
-# mqtt:
-#   broker: 10.10.10.99
-#   username: mqttuser
-#   password: mqttpass
-#   port: 1883
-#   topic_prefix: esphome/h-mqtt-pax-01-fan
-
 preferences:
   flash_write_interval: 15min
+
+captive_portal:
+
+globals:
+  - id: humidity_threshold_on
+    type: float
+    restore_value: yes
+    initial_value: '0'
+  - id: humidity_threshold_off
+    type: float
+    restore_value: yes
+    initial_value: '0'
 
 # I2C bus for SHT45 sensor
 i2c:
@@ -66,16 +75,16 @@ sensor:
 # SHT45 temperature and humidity sensor
   - platform: sht4x
     temperature:
-      name: "Bath temperature"
+      name: $room_name temperature
       unit_of_measurement: "°C"
       accuracy_decimals: 1
       state_class: "measurement"
     humidity:
-      name: "Bath Humidity"
+      name: $room_name Humidity
       unit_of_measurement: "%"
       accuracy_decimals: 1
       state_class: "measurement"
-      id: bathroom_humidity
+      id: bathroom_sensor
       on_value:
         then:
           - if:
@@ -84,11 +93,11 @@ sensor:
               then:
                 - if:
                     condition:
-                      lambda: 'return id(bathroom_humidity).state > id(humidity_threshold_on).state;'
+                      lambda: 'return id(bathroom_sensor).state > id(humidity_threshold_on);'
                     then:
                       - lambda: 'id(fan_pwm_output).set_level(id(auto_fan_speed).state / 100.0);'
                       - light.turn_on:
-                          id: bathroom_led
+                          id: rgb_led
                           brightness: 1.0
                           red: 0.0
                           green: 0.0
@@ -96,11 +105,11 @@ sensor:
                           effect: "Slow Pulse"
                 - if:
                     condition:
-                      lambda: 'return id(bathroom_humidity).state < id(humidity_threshold_off).state;'
+                      lambda: 'return id(bathroom_sensor).state < id(humidity_threshold_off);'
                     then:
                       - lambda: 'id(fan_pwm_output).set_level(id(duty_fan_speed).state / 100.0);'
                       - light.turn_on:
-                          id: bathroom_led
+                          id: rgb_led
                           brightness: 1.0
                           red: 0.0
                           green: 1.0
@@ -110,7 +119,7 @@ sensor:
 
   - platform: adc
     pin: GPIO34
-    name: "Bath Illuminance"
+    name: $room_name Illuminance
     device_class: illuminance
     unit_of_measurement: lx
     update_interval: 10s
@@ -170,6 +179,13 @@ sensor:
                 (to_string(seconds) + "s")
               ).c_str();
 
+# Sensor for humidity correction
+
+  - platform: template
+    name: "Humidity correction"
+    unit_of_measurement: step
+    id: hum_correction
+
 
 output:
   - platform: ledc
@@ -197,7 +213,7 @@ output:
 # RGB LED Control
 light:
   - platform: rgb
-    id: bathroom_led
+    id: rgb_led
     name: "Indicator"
     red: red_led_pin
     green: green_led_pin
@@ -279,30 +295,76 @@ number:
 
 # Humidity threshold on off
   - platform: template
-    id: humidity_threshold_on
+    id: humidity_threshold_on_raw
     name: "On Threshold %"
     icon: mdi:water-percent-alert
-    min_value: 30
-    max_value: 90
-    step: 1
-    unit_of_measurement: "%"
-    initial_value: 65
-    restore_value: true
+    min_value: 30.0
+    max_value: 90.0
+    step: 1.0
+    unit_of_measurement: '%'
+    initial_value: 65.0
+    restore_value: True
     mode: SLIDER
-    optimistic: true
+    optimistic: True
+    disabled_by_default: False
+    update_interval: 60s
 
   - platform: template
-    id: humidity_threshold_off
+    id: humidity_threshold_off_raw
     name: "Off Threshold %"
     icon: mdi:water-percent-alert
-    min_value: 30
-    max_value: 90
-    step: 1
-    unit_of_measurement: "%"
-    initial_value: 60
-    restore_value: true
+    min_value: 30.0
+    max_value: 90.0
+    step: 1.0
+    unit_of_measurement: '%'
+    initial_value: 60.0
+    restore_value: True
     mode: SLIDER
+    optimistic: True
+    disabled_by_default: False
+    update_interval: 60s
+
+#External humidity sensor thresholds correction if<60 no correction, if 60-70 then +10, if <70 switch on duty mode
+
+  - platform: template
+    name: "Humidity Correction"
+    id: external_hum
     optimistic: true
+    min_value: 0
+    max_value: 100
+    initial_value: 0
+    step: 1
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(external_hum).state < 60;'
+            then:
+              - lambda: |-
+                  id(hum_correction).publish_state(0);
+                  id(humidity_threshold_on) = id(humidity_threshold_on_raw).state + id(hum_correction).state;
+                  id(humidity_threshold_off) = id(humidity_threshold_off_raw).state + id(hum_correction).state;
+              - select.set:
+                  id: fan_mode_select
+                  option: "Auto"
+        - if:
+            condition:
+              lambda: 'return (id(external_hum).state >= 60) && (id(external_hum).state < 70);'
+            then:
+              - lambda: |-
+                  id(hum_correction).publish_state(15);
+                  id(humidity_threshold_on) = id(humidity_threshold_on_raw).state + id(hum_correction).state;
+                  id(humidity_threshold_off) = id(humidity_threshold_off_raw).state + id(hum_correction).state;
+              - select.set:
+                  id: fan_mode_select
+                  option: "Auto"
+        - if:
+            condition:
+              lambda: 'return id(external_hum).state >= 70;'
+            then:
+              - select.set:
+                  id: fan_mode_select
+                  option: "Duty"
 
 button:
   - platform: restart
@@ -327,21 +389,21 @@ select:
 
           if (x == "Duty") {
             id(fan_pwm_output).set_level(id(duty_fan_speed).state / 100.0);
-            auto call = id(bathroom_led).turn_on();
+            auto call = id(rgb_led).turn_on();
             call.set_brightness(1.0);
             call.set_rgb(0.0, 1.0, 0.0);
             call.set_effect("None");
             call.perform();
           } else if (x == "Manual") {
             id(fan_pwm_output).set_level(id(manual_fan_speed).state / 100.0);
-            auto call = id(bathroom_led).turn_on();
+            auto call = id(rgb_led).turn_on();
             call.set_brightness(1.0);
             call.set_rgb(0.0, 0.0, 1.0);
             call.set_effect("None");
             call.perform();
           } else if (x == "Burst") {
             id(fan_pwm_output).set_level(id(burst_fan_speed).state / 100.0);
-            auto call = id(bathroom_led).turn_on();
+            auto call = id(rgb_led).turn_on();
             call.set_brightness(1.0);
             call.set_rgb(1.0, 0.0, 0.0);
             call.set_effect("Fast Pulse");
