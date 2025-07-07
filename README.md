@@ -22,6 +22,12 @@ Indication of operating modes: green - on duty mode, blue - manual mode, red - b
 
 When the slider changes for the speed for manual mode, switching into manual mode after 10 minutes switch to automatic mode.
 
+Added support for an external humidity sensor. If the external humidity is below 60%, then nothing changes. 
+
+If the external humidity is within 60-70%, then 15% is added to the on-off thresholds. 
+
+If the external humidity is greater than 70%, then the automatic mode is disabled and the Duty mode is enabled.
+
 
 ![Main board](https://github.com/KostuaD/pwm_fan_pax_norte/blob/main/PAX_NORTE.png#:~:text=PAX_NORTE.png)
 
