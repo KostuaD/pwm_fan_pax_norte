@@ -28,6 +28,8 @@ If the external humidity is within 60-70%, then 15% is added to the on-off thres
 
 If the external humidity is greater than 70%, then the automatic mode is disabled and the Duty mode is enabled.
 
+Record this sensor using the number.set_value action in Home Assistant to the sensor.{device_name}_current_humidity.
+
 
 ![Main board](https://github.com/KostuaD/pwm_fan_pax_norte/blob/main/PAX_NORTE.png#:~:text=PAX_NORTE.png)
 
