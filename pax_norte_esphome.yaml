@@ -1,9 +1,9 @@
 substitutions:
-  room_name: "Bath"
+  room_name: Bath
   device_name: h-esp-pax-01-fan
 
 esphome:
-  name: h-esp-pax-01-fan
+  name: ${device_name}
   on_boot: 
     priority: 70
     then:
@@ -21,7 +21,8 @@ web_server:
 
 api:
   encryption:
-    key: "YOUR_API_KEY"
+    key: !secret encryption_key
+
 ota:
   - platform: esphome
     password: !secret ota_password
@@ -29,13 +30,13 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  use_address: h-esp-pax-01-fan.local
-
+  use_address: ${device_name}.local
   ap:
-    ssid: h_esp_pax_01_fan_Hotspot
+    ssid: "$device_name"
     password: !secret ssid_password
 
 logger:
+  level: WARN
 
 preferences:
   flash_write_interval: 15min
@@ -52,81 +53,46 @@ globals:
     restore_value: yes
     initial_value: '0'
 
-# I2C bus for SHT45 sensor
 i2c:
   sda: GPIO17
   scl: GPIO04
   frequency: 400kHz 
 
 text_sensor:
-
-  # Send IP Address
   - platform: wifi_info
     ip_address:
       name: IP Address
-
-  # Send Uptime in raw seconds
   - platform: template
-    name: Uptime
+    name: Uptime Human
     id: uptime_human
     icon: mdi:clock-start
 
 sensor:
-# SHT45 temperature and humidity sensor
   - platform: sht4x
     temperature:
-      name: $room_name temperature
+      name: "$room_name temperature"
       unit_of_measurement: "°C"
       accuracy_decimals: 1
       state_class: "measurement"
     humidity:
-      name: $room_name Humidity
+      name: "$room_name Humidity"
       unit_of_measurement: "%"
       accuracy_decimals: 1
       state_class: "measurement"
       id: bathroom_sensor
       on_value:
-        then:
-          - if:
-              condition:
-                lambda: 'return id(fan_mode_select).state == "Auto";'
-              then:
-                - if:
-                    condition:
-                      lambda: 'return id(bathroom_sensor).state > id(humidity_threshold_on);'
-                    then:
-                      - lambda: 'id(fan_pwm_output).set_level(id(auto_fan_speed).state / 100.0);'
-                      - light.turn_on:
-                          id: rgb_led
-                          brightness: 1.0
-                          red: 0.0
-                          green: 0.0
-                          blue: 1.0
-                          effect: "Slow Pulse"
-                - if:
-                    condition:
-                      lambda: 'return id(bathroom_sensor).state < id(humidity_threshold_off);'
-                    then:
-                      - lambda: 'id(fan_pwm_output).set_level(id(duty_fan_speed).state / 100.0);'
-                      - light.turn_on:
-                          id: rgb_led
-                          brightness: 1.0
-                          red: 0.0
-                          green: 1.0
-                          blue: 0.0
-                          effect: "None"
+        - script.execute: update_fan_state
     update_interval: 30s
 
   - platform: adc
     pin: GPIO34
-    name: $room_name Illuminance
+    name: "$room_name Illuminance"
     device_class: illuminance
     unit_of_measurement: lx
-    update_interval: 10s
+    update_interval: 30s
     filters:
       - multiply: 300
 
-# RPM Fan sensor
   - platform: pulse_counter
     pin: 
       number: GPIO16
@@ -139,7 +105,6 @@ sensor:
     filters:
       - multiply: 0.5 
 
-# Wi-Fi level sensor
   - platform: wifi_signal
     name: "WiFi Signal dB"
     id: wifi_signal_db
@@ -153,11 +118,9 @@ sensor:
       - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
     unit_of_measurement: "%"
     entity_category: "diagnostic"
-    device_class: ""
 
-# Device uptime sensor
   - platform: uptime
-    name: Uptime
+    name: Uptime Sensor
     id: uptime_sensor
     update_interval: 60s
     on_raw_value:
@@ -165,7 +128,7 @@ sensor:
         - text_sensor.template.publish:
             id: uptime_human
             state: !lambda |-
-              int seconds = round(id(uptime_sensor).raw_state);
+              int seconds = round(x);
               int days = seconds / (24 * 3600);
               seconds = seconds % (24 * 3600);
               int hours = seconds / 3600;
@@ -179,38 +142,30 @@ sensor:
                 (to_string(seconds) + "s")
               ).c_str();
 
-# Sensor for humidity correction
-
   - platform: template
-    name: "Humidity correction"
-    unit_of_measurement: step
+    name: "Humidity Correction Value"
     id: hum_correction
-
+    internal: true
 
 output:
   - platform: ledc
     pin: GPIO18
     id: red_led_pin
     inverted: true
-    max_power: 100%
   - platform: ledc
     pin: GPIO19
     id: green_led_pin
     inverted: true
-    max_power: 100%
   - platform: ledc
     pin: GPIO21
     id: blue_led_pin
     inverted: true
-    max_power: 100%
-
   - platform: ledc
     pin: GPIO22
     id: fan_pwm_output
     frequency: 25kHz
     inverted: false
 
-# RGB LED Control
 light:
   - platform: rgb
     id: rgb_led
@@ -220,18 +175,14 @@ light:
     blue: blue_led_pin
     effects:
       - pulse:
-      - pulse:
           name: "Fast Pulse"
           transition_length: 0.5s
           update_interval: 0.5s
-          min_brightness: 0%
-          max_brightness: 100%
       - pulse:
           name: "Slow Pulse"
           transition_length: 500ms
           update_interval: 2s
 
-# Fan Speed settings
 number:
   - platform: template
     id: manual_fan_speed
@@ -249,10 +200,7 @@ number:
       - select.set:
           id: fan_mode_select
           option: "Manual"
-      - delay: 10min
-      - select.set:
-          id: fan_mode_select
-          option: "Auto"
+      - script.execute: manual_mode_timer
 
   - platform: template
     id: auto_fan_speed
@@ -293,7 +241,6 @@ number:
     mode: SLIDER
     optimistic: true
 
-# Humidity threshold on off
   - platform: template
     id: humidity_threshold_on_raw
     name: "On Threshold %"
@@ -306,8 +253,6 @@ number:
     restore_value: True
     mode: SLIDER
     optimistic: True
-    disabled_by_default: False
-    update_interval: 60s
 
   - platform: template
     id: humidity_threshold_off_raw
@@ -321,18 +266,16 @@ number:
     restore_value: True
     mode: SLIDER
     optimistic: True
-    disabled_by_default: False
-    update_interval: 60s
-
-#External humidity sensor thresholds correction if<60 no correction, if 60-70 then +10, if <70 switch on duty mode
 
   - platform: template
-    name: "Humidity Correction"
+    name: "Humidity Outside"
+    icon: mdi:water-percent
     id: external_hum
     optimistic: true
     min_value: 0
     max_value: 100
     initial_value: 0
+    mode: BOX
     step: 1
     on_value:
       then:
@@ -366,13 +309,13 @@ number:
                   id: fan_mode_select
                   option: "Duty"
 
+
 button:
   - platform: restart
     icon: mdi:power-cycle
     name: "ESP Reboot"
-    entity_category: diagnostic
+    entity_category: "diagnostic"
 
-# Selecting the fan mode
 select:
   - platform: template
     id: fan_mode_select
@@ -384,30 +327,59 @@ select:
       - "Burst"
     optimistic: true
     set_action:
-      - lambda: |-
-          id(fan_mode_select).publish_state(x);
+      - lambda: id(fan_mode_select).publish_state(x);
+      - script.execute: update_fan_state
 
-          if (x == "Duty") {
-            id(fan_pwm_output).set_level(id(duty_fan_speed).state / 100.0);
-            auto call = id(rgb_led).turn_on();
-            call.set_brightness(1.0);
-            call.set_rgb(0.0, 1.0, 0.0);
-            call.set_effect("None");
-            call.perform();
-          } else if (x == "Manual") {
-            id(fan_pwm_output).set_level(id(manual_fan_speed).state / 100.0);
-            auto call = id(rgb_led).turn_on();
-            call.set_brightness(1.0);
-            call.set_rgb(0.0, 0.0, 1.0);
-            call.set_effect("None");
-            call.perform();
-          } else if (x == "Burst") {
-            id(fan_pwm_output).set_level(id(burst_fan_speed).state / 100.0);
-            auto call = id(rgb_led).turn_on();
-            call.set_brightness(1.0);
-            call.set_rgb(1.0, 0.0, 0.0);
-            call.set_effect("Fast Pulse");
-            call.perform();
-          }else {
-          }
+script:
+  - id: update_fan_state
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: 'return id(fan_mode_select).state == "Auto";'
+          then:
+            - if:
+                condition:
+                  lambda: 'return id(bathroom_sensor).state > id(humidity_threshold_on);'
+                then:
+                  - output.set_level:
+                      id: fan_pwm_output
+                      level: !lambda "return id(auto_fan_speed).state / 100.0;"
+                  - light.turn_on: { id: rgb_led, red: 0.0, green: 0.0, blue: 1.0, brightness: 1.0, effect: "Slow Pulse" }
+                else:
+                  - output.set_level:
+                      id: fan_pwm_output
+                      level: !lambda "return id(duty_fan_speed).state / 100.0;"
+                  - light.turn_on: { id: rgb_led, red: 0.0, green: 1.0, blue: 0.0, brightness: 1.0, effect: "None" }
+      - if:
+          condition:
+            lambda: 'return id(fan_mode_select).state == "Duty";'
+          then:
+            - output.set_level:
+                id: fan_pwm_output
+                level: !lambda "return id(duty_fan_speed).state / 100.0;"
+            - light.turn_on: { id: rgb_led, red: 0.0, green: 1.0, blue: 0.0, brightness: 1.0, effect: "None" }
+      - if:
+          condition:
+            lambda: 'return id(fan_mode_select).state == "Manual";'
+          then:
+            - output.set_level:
+                id: fan_pwm_output
+                level: !lambda "return id(manual_fan_speed).state / 100.0;"
+            - light.turn_on: { id: rgb_led, red: 0.0, green: 0.0, blue: 1.0, brightness: 1.0, effect: "None" }
+      - if:
+          condition:
+            lambda: 'return id(fan_mode_select).state == "Burst";'
+          then:
+            - output.set_level:
+                id: fan_pwm_output
+                level: !lambda "return id(burst_fan_speed).state / 100.0;"
+            - light.turn_on: { id: rgb_led, red: 1.0, green: 0.0, blue: 0.0, brightness: 1.0, effect: "Fast Pulse" }
 
+  - id: manual_mode_timer
+    mode: restart
+    then:
+      - delay: 10min
+      - select.set:
+          id: fan_mode_select
+          option: "Auto"
