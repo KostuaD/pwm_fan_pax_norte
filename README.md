@@ -33,9 +33,9 @@ If the external humidity is greater than 70%, then the automatic mode is disable
 
 Pins on main board:
 
-1 - 3.3V
-2 - TX
-3 - RX
-4 - GND
-5 - GPIO0
+1 - 3.3V, 
+2 - TX, 
+3 - RX, 
+4 - GND, 
+5 - GPIO0, 
 6 - EN
