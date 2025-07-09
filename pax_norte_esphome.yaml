@@ -43,6 +43,33 @@ preferences:
 
 captive_portal:
 
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Kyiv
+    servers:
+     - 0.pool.ntp.org
+     - 1.pool.ntp.org
+     - 2.pool.ntp.org
+#Quiet mode start time
+    on_time: 
+      - seconds: 0
+        minutes: 0
+        hours: 0
+        then:
+          - select.set:
+              id: fan_mode_select
+              option: "Duty"
+          - light.turn_on: { id: rgb_led, red: 1.0, green: 1.0, blue: 1.0, brightness: 1.0, effect: "Slow Pulse" }
+#Quiet mode end time
+      - seconds: 0
+        minutes: 0
+        hours: 7
+        then:
+          - select.set:
+              id: fan_mode_select
+              option: "Auto"
+
 globals:
   - id: humidity_threshold_on
     type: float
@@ -62,10 +89,20 @@ text_sensor:
   - platform: wifi_info
     ip_address:
       name: IP Address
+  
   - platform: template
     name: Uptime Human
     id: uptime_human
     icon: mdi:clock-start
+
+  - platform: template
+    name: "Current Time"
+    id: current_time_text
+    icon: mdi:clock-outline
+    lambda: |-
+      auto time = id(sntp_time).now();
+      return time.strftime("%H:%M:%S");
+    update_interval: 1s
 
 sensor:
   - platform: sht4x
@@ -281,10 +318,10 @@ number:
       then:
         - if:
             condition:
-              lambda: 'return id(external_hum).state < 60;'
+              lambda: 'return id(external_hum).state < 60 && id(fan_mode_select).state == "Auto";'
             then:
               - lambda: |-
-                  id(hum_correction).publish_state(0);
+                  id(hum_correction).publish_state(0); 
                   id(humidity_threshold_on) = id(humidity_threshold_on_raw).state + id(hum_correction).state;
                   id(humidity_threshold_off) = id(humidity_threshold_off_raw).state + id(hum_correction).state;
               - select.set:
@@ -292,7 +329,7 @@ number:
                   option: "Auto"
         - if:
             condition:
-              lambda: 'return (id(external_hum).state >= 60) && (id(external_hum).state < 70);'
+              lambda: 'return (id(external_hum).state >= 60) && (id(external_hum).state < 70) && id(fan_mode_select).state == "Auto";'
             then:
               - lambda: |-
                   id(hum_correction).publish_state(15);
@@ -303,7 +340,7 @@ number:
                   option: "Auto"
         - if:
             condition:
-              lambda: 'return id(external_hum).state >= 70;'
+              lambda: 'return id(external_hum).state >= 70 && id(fan_mode_select).state == "Auto";'
             then:
               - select.set:
                   id: fan_mode_select
@@ -350,7 +387,7 @@ script:
                   - output.set_level:
                       id: fan_pwm_output
                       level: !lambda "return id(duty_fan_speed).state / 100.0;"
-                  - light.turn_on: { id: rgb_led, red: 0.0, green: 1.0, blue: 0.0, brightness: 1.0, effect: "None" }
+                  - light.turn_on: { id: rgb_led, red: 0.0, green: 1.0, blue: 0.0, brightness: 1.0, effect: "Slow Pulse" }
       - if:
           condition:
             lambda: 'return id(fan_mode_select).state == "Duty";'
