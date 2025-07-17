@@ -10,15 +10,18 @@ esphome:
       - select.set:
          id: fan_mode_select
          option: "Auto"
+  comment: PAX-ESPhome Ventilator
 
 # --- Core Components ---
 esp32:
   board: esp32dev
   framework:
-    type: arduino
+    type: esp-idf
 
 web_server:
   port: 80
+  version: 3
+  local: True
 
 api:
   encryption:
@@ -124,6 +127,7 @@ sensor:
       on_value:
         - script.execute: update_fan_state
     update_interval: 30s
+
   - platform: adc
     pin: GPIO34
     name: "$room_name Illuminance"
@@ -132,7 +136,8 @@ sensor:
     update_interval: 30s
     filters:
       - multiply: 300
-  - platform: pulse_counter
+
+  - platform: pulse_meter
     pin: 
       number: GPIO16
       mode: INPUT_PULLUP
@@ -143,6 +148,12 @@ sensor:
     accuracy_decimals: 0
     filters:
       - multiply: 0.5 
+      - quantile:
+          window_size: 100
+          send_every: 100
+          send_first_at: 3
+          quantile: .1
+
   - platform: wifi_signal
     name: "WiFi Signal dB"
     id: wifi_signal_db
