@@ -11,6 +11,7 @@ esphome:
          id: fan_mode_select
          option: "Auto"
 
+# --- Core Components ---
 esp32:
   board: esp32dev
   framework:
@@ -36,13 +37,14 @@ wifi:
     password: !secret ssid_password
 
 logger:
-  level: WARN
+  level: DEBUG
 
 preferences:
   flash_write_interval: 15min
 
 captive_portal:
 
+# --- Time and Scheduled Actions ---
 time:
   - platform: sntp
     id: sntp_time
@@ -51,25 +53,28 @@ time:
      - 0.pool.ntp.org
      - 1.pool.ntp.org
      - 2.pool.ntp.org
-#Quiet mode start time
+    # Quiet mode start time
     on_time: 
       - seconds: 0
         minutes: 0
         hours: 0
         then:
+          - logger.log: { format: "Night time (00:00). Entering quiet 'Duty' mode.", level: INFO }
           - select.set:
               id: fan_mode_select
               option: "Duty"
           - light.turn_on: { id: rgb_led, red: 1.0, green: 1.0, blue: 1.0, brightness: 1.0, effect: "Slow Pulse" }
-#Quiet mode end time
+    # Quiet mode end time
       - seconds: 0
         minutes: 0
         hours: 7
         then:
+          - logger.log: { format: "Day time (07:00). Reverting to 'Auto' mode.", level: INFO }
           - select.set:
               id: fan_mode_select
               option: "Auto"
 
+# --- Global Variables for State Tracking ---
 globals:
   - id: humidity_threshold_on
     type: float
@@ -79,22 +84,26 @@ globals:
     type: float
     restore_value: yes
     initial_value: '0'
+  - id: is_in_high_speed_auto_mode
+    type: bool
+    restore_value: no
+    initial_value: 'false'
 
+# --- Hardware Interface ---
 i2c:
   sda: GPIO17
   scl: GPIO04
   frequency: 400kHz 
 
+# --- Sensors ---
 text_sensor:
   - platform: wifi_info
     ip_address:
       name: IP Address
-  
   - platform: template
     name: Uptime Human
     id: uptime_human
     icon: mdi:clock-start
-
   - platform: template
     name: "Current Time"
     id: current_time_text
@@ -103,24 +112,18 @@ text_sensor:
       auto time = id(sntp_time).now();
       return time.strftime("%H:%M:%S");
     update_interval: 1s
+    internal: true
 
 sensor:
   - platform: sht4x
     temperature:
       name: "$room_name temperature"
-      unit_of_measurement: "°C"
-      accuracy_decimals: 1
-      state_class: "measurement"
     humidity:
       name: "$room_name Humidity"
-      unit_of_measurement: "%"
-      accuracy_decimals: 1
-      state_class: "measurement"
       id: bathroom_sensor
       on_value:
         - script.execute: update_fan_state
     update_interval: 30s
-
   - platform: adc
     pin: GPIO34
     name: "$room_name Illuminance"
@@ -129,7 +132,6 @@ sensor:
     update_interval: 30s
     filters:
       - multiply: 300
-
   - platform: pulse_counter
     pin: 
       number: GPIO16
@@ -141,13 +143,11 @@ sensor:
     accuracy_decimals: 0
     filters:
       - multiply: 0.5 
-
   - platform: wifi_signal
     name: "WiFi Signal dB"
     id: wifi_signal_db
     update_interval: 60s
     entity_category: "diagnostic"
-
   - platform: copy
     source_id: wifi_signal_db
     name: "WiFi Signal Percent"
@@ -155,7 +155,6 @@ sensor:
       - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
     unit_of_measurement: "%"
     entity_category: "diagnostic"
-
   - platform: uptime
     name: Uptime Sensor
     id: uptime_sensor
@@ -178,12 +177,12 @@ sensor:
                 (minutes ? to_string(minutes) + "m " : "") +
                 (to_string(seconds) + "s")
               ).c_str();
-
   - platform: template
     name: "Humidity Correction Value"
     id: hum_correction
     internal: true
 
+# --- Outputs (PWM for Fan and LED) ---
 output:
   - platform: ledc
     pin: GPIO18
@@ -220,6 +219,7 @@ light:
           transition_length: 500ms
           update_interval: 2s
 
+# --- User Controls (Sliders, etc.) ---
 number:
   - platform: template
     id: manual_fan_speed
@@ -237,8 +237,6 @@ number:
       - select.set:
           id: fan_mode_select
           option: "Manual"
-      - script.execute: manual_mode_timer
-
   - platform: template
     id: auto_fan_speed
     name: "Fan Speed Auto"
@@ -247,11 +245,10 @@ number:
     max_value: 75
     step: 1
     unit_of_measurement: "%"
-    initial_value: 80
+    initial_value: 75
     restore_value: true
     mode: SLIDER
     optimistic: true
-
   - platform: template
     id: duty_fan_speed
     name: "Fan Speed Duty"
@@ -264,7 +261,6 @@ number:
     restore_value: true
     mode: SLIDER
     optimistic: true
-
   - platform: template
     id: burst_fan_speed
     name: "Fan Speed Burst"
@@ -273,11 +269,10 @@ number:
     max_value: 75
     step: 1
     unit_of_measurement: "%"
-    initial_value: 90
+    initial_value: 75 
     restore_value: true
     mode: SLIDER
     optimistic: true
-
   - platform: template
     id: humidity_threshold_on_raw
     name: "On Threshold %"
@@ -290,7 +285,6 @@ number:
     restore_value: True
     mode: SLIDER
     optimistic: True
-
   - platform: template
     id: humidity_threshold_off_raw
     name: "Off Threshold %"
@@ -303,7 +297,6 @@ number:
     restore_value: True
     mode: SLIDER
     optimistic: True
-
   - platform: template
     name: "Humidity Outside"
     icon: mdi:water-percent
@@ -318,34 +311,29 @@ number:
       then:
         - if:
             condition:
-              lambda: 'return id(external_hum).state < 60 && id(fan_mode_select).state == "Auto";'
+              lambda: 'return id(fan_mode_select).state != "Auto";'
             then:
-              - lambda: |-
-                  id(hum_correction).publish_state(0); 
-                  id(humidity_threshold_on) = id(humidity_threshold_on_raw).state + id(hum_correction).state;
-                  id(humidity_threshold_off) = id(humidity_threshold_off_raw).state + id(hum_correction).state;
-              - select.set:
-                  id: fan_mode_select
-                  option: "Auto"
-        - if:
-            condition:
-              lambda: 'return (id(external_hum).state >= 60) && (id(external_hum).state < 70) && id(fan_mode_select).state == "Auto";'
-            then:
-              - lambda: |-
-                  id(hum_correction).publish_state(15);
-                  id(humidity_threshold_on) = id(humidity_threshold_on_raw).state + id(hum_correction).state;
-                  id(humidity_threshold_off) = id(humidity_threshold_off_raw).state + id(hum_correction).state;
-              - select.set:
-                  id: fan_mode_select
-                  option: "Auto"
-        - if:
-            condition:
-              lambda: 'return id(external_hum).state >= 70 && id(fan_mode_select).state == "Auto";'
-            then:
-              - select.set:
-                  id: fan_mode_select
-                  option: "Duty"
-
+              - logger.log: { format: "External humidity changed, but not in Auto mode. No action taken.", level: DEBUG }
+            else:
+              - if:
+                  condition:
+                    lambda: 'return id(external_hum).state >= 70;'
+                  then:
+                    - logger.log: { format: "High external humidity (>=70%%). Switching to 'Duty' mode.", level: INFO }
+                    - select.set:
+                        id: fan_mode_select
+                        option: "Duty"
+                  else:
+                    - lambda: |-
+                        float correction = 0;
+                        if (id(external_hum).state >= 60) {
+                          correction = 10;
+                        }
+                        id(hum_correction).publish_state(correction);
+                        id(humidity_threshold_on) = id(humidity_threshold_on_raw).state + correction;
+                        id(humidity_threshold_off) = id(humidity_threshold_off_raw).state + correction;
+                        ESP_LOGI("main", "External humidity updated. New ON threshold: %.1f, OFF threshold: %.1f", id(humidity_threshold_on), id(humidity_threshold_off));
+                    - script.execute: update_fan_state
 
 button:
   - platform: restart
@@ -357,33 +345,45 @@ select:
   - platform: template
     id: fan_mode_select
     name: "Fan Mode"
-    options:
-      - "Auto"
-      - "Duty"
-      - "Manual"
-      - "Burst"
+    options: ["Auto", "Duty", "Manual", "Burst"]
     optimistic: true
     set_action:
       - lambda: id(fan_mode_select).publish_state(x);
       - script.execute: update_fan_state
 
+# --- Scripts and Automations ---
 script:
+  # This is the main script that controls all fan logic
   - id: update_fan_state
     mode: single
     then:
+      # CHANGE: Stop all timers before evaluating the state to prevent false triggers
+      - script.stop: manual_mode_timer
+      - script.stop: burst_mode_timer
+
       - if:
           condition:
             lambda: 'return id(fan_mode_select).state == "Auto";'
           then:
             - if:
                 condition:
-                  lambda: 'return id(bathroom_sensor).state > id(humidity_threshold_on);'
+                  lambda: |-
+                    // Condition to turn ON (or STAY ON) at high speed:
+                    // 1. Humidity is above the ON threshold.
+                    // OR
+                    // 2. The fan is already in high-speed mode, AND humidity has NOT yet dropped below the OFF threshold.
+                    return id(bathroom_sensor).state > id(humidity_threshold_on) ||
+                           (id(is_in_high_speed_auto_mode) && (id(bathroom_sensor).state > id(humidity_threshold_off)));
                 then:
+                  # High speed "drying" state
+                  - lambda: 'id(is_in_high_speed_auto_mode) = true;'
                   - output.set_level:
                       id: fan_pwm_output
                       level: !lambda "return id(auto_fan_speed).state / 100.0;"
                   - light.turn_on: { id: rgb_led, red: 0.0, green: 0.0, blue: 1.0, brightness: 1.0, effect: "Slow Pulse" }
                 else:
+                  # Low speed "idle/duty" state
+                  - lambda: 'id(is_in_high_speed_auto_mode) = false;'
                   - output.set_level:
                       id: fan_pwm_output
                       level: !lambda "return id(duty_fan_speed).state / 100.0;"
@@ -392,6 +392,7 @@ script:
           condition:
             lambda: 'return id(fan_mode_select).state == "Duty";'
           then:
+            - lambda: 'id(is_in_high_speed_auto_mode) = false;'
             - output.set_level:
                 id: fan_pwm_output
                 level: !lambda "return id(duty_fan_speed).state / 100.0;"
@@ -400,23 +401,42 @@ script:
           condition:
             lambda: 'return id(fan_mode_select).state == "Manual";'
           then:
+            - lambda: 'id(is_in_high_speed_auto_mode) = false;'
             - output.set_level:
                 id: fan_pwm_output
                 level: !lambda "return id(manual_fan_speed).state / 100.0;"
             - light.turn_on: { id: rgb_led, red: 0.0, green: 0.0, blue: 1.0, brightness: 1.0, effect: "None" }
+            # CHANGE: Execute the manual mode timer here
+            - script.execute: manual_mode_timer
       - if:
           condition:
             lambda: 'return id(fan_mode_select).state == "Burst";'
           then:
+            - lambda: 'id(is_in_high_speed_auto_mode) = false;'
             - output.set_level:
                 id: fan_pwm_output
                 level: !lambda "return id(burst_fan_speed).state / 100.0;"
             - light.turn_on: { id: rgb_led, red: 1.0, green: 0.0, blue: 0.0, brightness: 1.0, effect: "Fast Pulse" }
+            # CHANGE: Execute the burst mode timer here
+            - script.execute: burst_mode_timer
 
+  # Timer to revert from Manual mode to Auto after 10 minutes
   - id: manual_mode_timer
     mode: restart
     then:
       - delay: 10min
+      - logger.log: { format: "Manual mode timer expired. Reverting to 'Auto' mode.", level: INFO }
+      - select.set:
+          id: fan_mode_select
+          option: "Auto"
+
+  # CHANGE: Added a new script for the Burst mode timer
+  # Timer to revert from Burst mode to Auto after 10 minutes
+  - id: burst_mode_timer
+    mode: restart
+    then:
+      - delay: 10min
+      - logger.log: { format: "Burst mode timer expired. Reverting to 'Auto' mode.", level: INFO }
       - select.set:
           id: fan_mode_select
           option: "Auto"
