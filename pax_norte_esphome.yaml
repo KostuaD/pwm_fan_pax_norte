@@ -1,6 +1,6 @@
 substitutions:
-  room_name: Bath
-  device_name: h-esp-pax-01-fan
+  room_name: Test
+  device_name: humidity-controller
 
 esphome:
   name: ${device_name}
@@ -10,7 +10,14 @@ esphome:
       - select.set:
          id: fan_mode_select
          option: "Auto"
+      - lambda: |-
+          id(humidity_threshold_on) = id(humidity_threshold_on_raw).state;
+          id(humidity_threshold_off) = id(humidity_threshold_off_raw).state;
+          ESP_LOGI("main", "Пороги установлены при загрузке. ВКЛ: %.1f, ВЫКЛ: %.1f", id(humidity_threshold_on), id(humidity_threshold_off));
   comment: PAX-ESPhome Ventilator
+  platformio_options:
+    build_flags:
+      - "-D CONFIG_ADC_SUPPRESS_DEPRECATE_WARN=1" 
 
 # --- Core Components ---
 esp32:
@@ -104,7 +111,7 @@ text_sensor:
     ip_address:
       name: IP Address
   - platform: template
-    name: Uptime Human
+    name: Uptime
     id: uptime_human
     icon: mdi:clock-start
   - platform: template
@@ -113,8 +120,8 @@ text_sensor:
     icon: mdi:clock-outline
     lambda: |-
       auto time = id(sntp_time).now();
-      return time.strftime("%H:%M:%S");
-    update_interval: 1s
+      return time.strftime("%H:%M");
+    update_interval: 60s
     internal: true
 
 sensor:
@@ -123,7 +130,7 @@ sensor:
       name: "$room_name temperature"
     humidity:
       name: "$room_name Humidity"
-      id: bathroom_sensor
+      id: humidity_sensor
       on_value:
         - script.execute: update_fan_state
     update_interval: 30s
@@ -136,6 +143,18 @@ sensor:
     update_interval: 30s
     filters:
       - multiply: 300
+
+  # - platform: adc
+  #   pin: GPIO34
+  #   name: "$room_name Illuminance"
+  #   device_class: illuminance
+  #   unit_of_measurement: lx
+  #   accuracy_decimals: 0
+  #   update_interval: 30s
+  #   attenuation: 0dB
+  #   samples: 10
+  #   filters:
+  #     - multiply: 100.0
 
   - platform: pulse_meter
     pin: 
@@ -181,12 +200,12 @@ sensor:
               int hours = seconds / 3600;
               seconds = seconds % 3600;
               int minutes = seconds /  60;
-              seconds = seconds % 60;
+
               return (
                 (days ? to_string(days) + "d " : "") +
                 (hours ? to_string(hours) + "h " : "") +
-                (minutes ? to_string(minutes) + "m " : "") +
-                (to_string(seconds) + "s")
+                (minutes ? to_string(minutes) + "m " : "") 
+
               ).c_str();
   - platform: template
     name: "Humidity Correction Value"
@@ -264,7 +283,7 @@ number:
     id: duty_fan_speed
     name: "Fan Speed Duty"
     icon: mdi:fan-speed-3
-    min_value: 11
+    min_value: 9
     max_value: 20
     step: 1
     unit_of_measurement: "%"
@@ -383,8 +402,8 @@ script:
                     // 1. Humidity is above the ON threshold.
                     // OR
                     // 2. The fan is already in high-speed mode, AND humidity has NOT yet dropped below the OFF threshold.
-                    return id(bathroom_sensor).state > id(humidity_threshold_on) ||
-                           (id(is_in_high_speed_auto_mode) && (id(bathroom_sensor).state > id(humidity_threshold_off)));
+                    return id(humidity_sensor).state > id(humidity_threshold_on) ||
+                           (id(is_in_high_speed_auto_mode) && (id(humidity_sensor).state > id(humidity_threshold_off)));
                 then:
                   # High speed "drying" state
                   - lambda: 'id(is_in_high_speed_auto_mode) = true;'
@@ -441,7 +460,6 @@ script:
           id: fan_mode_select
           option: "Auto"
 
-  # CHANGE: Added a new script for the Burst mode timer
   # Timer to revert from Burst mode to Auto after 10 minutes
   - id: burst_mode_timer
     mode: restart
