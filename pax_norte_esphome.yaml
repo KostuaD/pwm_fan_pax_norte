@@ -2,17 +2,53 @@ substitutions:
   room_name: Bath
   device_name: h-esp-pax-01-fan
 
+  # Hardware Pins
+  i2c_sda_pin: GPIO17
+  i2c_scl_pin: GPIO04
+  adc_illuminance_pin: GPIO34
+  fan_rpm_pin: GPIO16
+  red_led_pin: GPIO18
+  green_led_pin: GPIO19
+  blue_led_pin: GPIO21
+  fan_pwm_pin: GPIO22
+
+  # Fan Speed Defaults
+  manual_fan_speed_min: "11"
+  manual_fan_speed_max: "75"
+  manual_fan_speed_default: "50"
+  auto_fan_speed_min: "11"
+  auto_fan_speed_max: "75"
+  auto_fan_speed_default: "75"
+  duty_fan_speed_min: "11"
+  duty_fan_speed_max: "20"
+  duty_fan_speed_default: "11"
+  burst_fan_speed_min: "60"
+  burst_fan_speed_max: "75"
+  burst_fan_speed_default: "75"
+
+  # Humidity Thresholds
+  humidity_threshold_on_min: "30.0"
+  humidity_threshold_on_max: "90.0"
+  humidity_threshold_on_default: "65.0"
+  humidity_threshold_off_min: "30.0"
+  humidity_threshold_off_max: "90.0"
+  humidity_threshold_off_default: "60.0"
+
+  # Debounce time for sensor changes (in seconds)
+  debounce_time: "30"
+
 esphome:
   name: ${device_name}
+  comment: PAX-ESPhome Ventilator
+
+  # On boot, set the fan to auto mode
   on_boot: 
     priority: 70
     then:
       - select.set:
          id: fan_mode_select
          option: "Auto"
-  comment: PAX-ESPhome Ventilator
 
-# --- Core Components ---
 esp32:
   board: esp32dev
   framework:
@@ -56,7 +92,7 @@ time:
      - 0.pool.ntp.org
      - 1.pool.ntp.org
      - 2.pool.ntp.org
-    # Quiet mode start time
+    # Quiet mode start time (Duty mode at night)
     on_time: 
       - seconds: 0
         minutes: 0
@@ -67,7 +103,7 @@ time:
               id: fan_mode_select
               option: "Duty"
           - light.turn_on: { id: rgb_led, red: 1.0, green: 1.0, blue: 1.0, brightness: 1.0, effect: "Slow Pulse" }
-    # Quiet mode end time
+      # End of quiet mode (back to Auto in the morning)
       - seconds: 0
         minutes: 0
         hours: 7
@@ -91,11 +127,20 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
+  # For debounce logic
+  - id: last_humidity_value
+    type: float
+    restore_value: no
+    initial_value: '0'
+  - id: last_humidity_update
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
 
 # --- Hardware Interface ---
 i2c:
-  sda: GPIO17
-  scl: GPIO04
+  sda: ${i2c_sda_pin}
+  scl: ${i2c_scl_pin}
   frequency: 400kHz 
 
 # --- Sensors ---
@@ -125,11 +170,21 @@ sensor:
       name: "$room_name Humidity"
       id: bathroom_sensor
       on_value:
-        - script.execute: update_fan_state
+        - lambda: |-
+            // Debounce logic for humidity changes
+            float current_humidity = x;
+            uint32_t now = millis() / 1000;
+            if (abs(current_humidity - id(last_humidity_value)) >= 0.3f || (now - id(last_humidity_update) > ${debounce_time})) {
+              id(last_humidity_value) = current_humidity;
+              id(last_humidity_update) = now;
+              id(update_fan_state).execute();
+            } else {
+              ESP_LOGD("main", "Humidity change ignored due to debounce.");
+            }
     update_interval: 30s
 
   - platform: adc
-    pin: GPIO34
+    pin: ${adc_illuminance_pin}
     name: "$room_name Illuminance"
     device_class: illuminance
     unit_of_measurement: lx
@@ -139,7 +194,7 @@ sensor:
 
   - platform: pulse_meter
     pin: 
-      number: GPIO16
+      number: ${fan_rpm_pin}
       mode: INPUT_PULLUP
     unit_of_measurement: 'RPM'
     id: fan_speed
@@ -196,23 +251,24 @@ sensor:
 # --- Outputs (PWM for Fan and LED) ---
 output:
   - platform: ledc
-    pin: GPIO18
+    pin: ${red_led_pin}
     id: red_led_pin
     inverted: true
   - platform: ledc
-    pin: GPIO19
+    pin: ${green_led_pin}
     id: green_led_pin
     inverted: true
   - platform: ledc
-    pin: GPIO21
+    pin: ${blue_led_pin}
     id: blue_led_pin
     inverted: true
   - platform: ledc
-    pin: GPIO22
+    pin: ${fan_pwm_pin}
     id: fan_pwm_output
     frequency: 25kHz
     inverted: false
 
+# --- RGB LED status indicator with effects ---
 light:
   - platform: rgb
     id: rgb_led
@@ -236,10 +292,10 @@ number:
     id: manual_fan_speed
     name: "Fan Speed Manual"
     icon: mdi:fan
-    min_value: 11
-    max_value: 75
+    min_value: ${manual_fan_speed_min}
+    max_value: ${manual_fan_speed_max}
     step: 1
-    initial_value: 50
+    initial_value: ${manual_fan_speed_default}
     unit_of_measurement: "%"
     restore_value: true
     mode: SLIDER
@@ -252,11 +308,11 @@ number:
     id: auto_fan_speed
     name: "Fan Speed Auto"
     icon: mdi:fan-speed-1
-    min_value: 11
-    max_value: 75
+    min_value: ${auto_fan_speed_min}
+    max_value: ${auto_fan_speed_max}
     step: 1
     unit_of_measurement: "%"
-    initial_value: 75
+    initial_value: ${auto_fan_speed_default}
     restore_value: true
     mode: SLIDER
     optimistic: true
@@ -264,11 +320,11 @@ number:
     id: duty_fan_speed
     name: "Fan Speed Duty"
     icon: mdi:fan-speed-3
-    min_value: 11
-    max_value: 20
+    min_value: ${duty_fan_speed_min}
+    max_value: ${duty_fan_speed_max}
     step: 1
     unit_of_measurement: "%"
-    initial_value: 11
+    initial_value: ${duty_fan_speed_default}
     restore_value: true
     mode: SLIDER
     optimistic: true
@@ -276,11 +332,11 @@ number:
     id: burst_fan_speed
     name: "Fan Speed Burst"
     icon: mdi:fan-speed-2
-    min_value: 60
-    max_value: 75
+    min_value: ${burst_fan_speed_min}
+    max_value: ${burst_fan_speed_max}
     step: 1
     unit_of_measurement: "%"
-    initial_value: 75 
+    initial_value: ${burst_fan_speed_default}
     restore_value: true
     mode: SLIDER
     optimistic: true
@@ -288,11 +344,11 @@ number:
     id: humidity_threshold_on_raw
     name: "On Threshold %"
     icon: mdi:water-percent-alert
-    min_value: 30.0
-    max_value: 90.0
+    min_value: ${humidity_threshold_on_min}
+    max_value: ${humidity_threshold_on_max}
     step: 1.0
     unit_of_measurement: '%'
-    initial_value: 65.0
+    initial_value: ${humidity_threshold_on_default}
     restore_value: True
     mode: SLIDER
     optimistic: True
@@ -300,11 +356,11 @@ number:
     id: humidity_threshold_off_raw
     name: "Off Threshold %"
     icon: mdi:water-percent-alert
-    min_value: 30.0
-    max_value: 90.0
+    min_value: ${humidity_threshold_off_min}
+    max_value: ${humidity_threshold_off_max}
     step: 1.0
     unit_of_measurement: '%'
-    initial_value: 60.0
+    initial_value: ${humidity_threshold_off_default}
     restore_value: True
     mode: SLIDER
     optimistic: True
@@ -346,6 +402,7 @@ number:
                         ESP_LOGI("main", "External humidity updated. New ON threshold: %.1f, OFF threshold: %.1f", id(humidity_threshold_on), id(humidity_threshold_off));
                     - script.execute: update_fan_state
 
+# --- Buttons & Selects ---
 button:
   - platform: restart
     icon: mdi:power-cycle
@@ -364,11 +421,11 @@ select:
 
 # --- Scripts and Automations ---
 script:
-  # This is the main script that controls all fan logic
+  # Main logic for controlling the fan based on mode and sensor data
   - id: update_fan_state
     mode: single
     then:
-      # CHANGE: Stop all timers before evaluating the state to prevent false triggers
+      # Stop timers to prevent conflicts before evaluating state
       - script.stop: manual_mode_timer
       - script.stop: burst_mode_timer
 
@@ -379,10 +436,7 @@ script:
             - if:
                 condition:
                   lambda: |-
-                    // Condition to turn ON (or STAY ON) at high speed:
-                    // 1. Humidity is above the ON threshold.
-                    // OR
-                    // 2. The fan is already in high-speed mode, AND humidity has NOT yet dropped below the OFF threshold.
+                    // High speed: Humidity above ON threshold, or continuing until OFF threshold reached
                     return id(bathroom_sensor).state > id(humidity_threshold_on) ||
                            (id(is_in_high_speed_auto_mode) && (id(bathroom_sensor).state > id(humidity_threshold_off)));
                 then:
@@ -417,7 +471,7 @@ script:
                 id: fan_pwm_output
                 level: !lambda "return id(manual_fan_speed).state / 100.0;"
             - light.turn_on: { id: rgb_led, red: 0.0, green: 0.0, blue: 1.0, brightness: 1.0, effect: "None" }
-            # CHANGE: Execute the manual mode timer here
+            # Start manual mode timer
             - script.execute: manual_mode_timer
       - if:
           condition:
@@ -428,7 +482,7 @@ script:
                 id: fan_pwm_output
                 level: !lambda "return id(burst_fan_speed).state / 100.0;"
             - light.turn_on: { id: rgb_led, red: 1.0, green: 0.0, blue: 0.0, brightness: 1.0, effect: "Fast Pulse" }
-            # CHANGE: Execute the burst mode timer here
+            # Start burst mode timer
             - script.execute: burst_mode_timer
 
   # Timer to revert from Manual mode to Auto after 10 minutes
@@ -441,7 +495,6 @@ script:
           id: fan_mode_select
           option: "Auto"
 
-  # CHANGE: Added a new script for the Burst mode timer
   # Timer to revert from Burst mode to Auto after 10 minutes
   - id: burst_mode_timer
     mode: restart
