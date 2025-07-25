@@ -1,19 +1,38 @@
 substitutions:
-  room_name: Test
-  device_name: humidity-controller
+  room_name: "TEST"
+  device_name: h-esp-pax-fan
+  version: "25.7.25.2"
+
+  # User-adjustable parameters
+  i2c_sda: GPIO17
+  i2c_scl: GPIO04
+  fan_pwm_pin: GPIO22
+  red_led_pin: GPIO18
+  green_led_pin: GPIO19
+  blue_led_pin: GPIO21
+  fan_rpm_pin: GPIO16
+  illuminance_adc_pin: GPIO34
+
+  fan_pwm_freq: "25kHz"
+  fan_mode_manual_time: "10min"
+  fan_mode_burst_time: "10min"
+  humidity_on_default: "65.0"
+  humidity_off_default: "60.0"
+  debounce_time_ms: "10000" # Debounce interval for humidity-triggered speed change
 
 esphome:
   name: ${device_name}
   on_boot: 
     priority: 70
     then:
+      # Set fan mode to Auto and load humidity thresholds on boot
       - select.set:
          id: fan_mode_select
          option: "Auto"
       - lambda: |-
           id(humidity_threshold_on) = id(humidity_threshold_on_raw).state;
           id(humidity_threshold_off) = id(humidity_threshold_off_raw).state;
-          ESP_LOGI("main", "Пороги установлены при загрузке. ВКЛ: %.1f, ВЫКЛ: %.1f", id(humidity_threshold_on), id(humidity_threshold_off));
+          ESP_LOGI("main", "Thresholds loaded at boot. ON: %.1f, OFF: %.1f", id(humidity_threshold_on), id(humidity_threshold_off));
   comment: PAX-ESPhome Ventilator
   platformio_options:
     build_flags:
@@ -98,11 +117,19 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
+  - id: debounce_humidity_timer
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: debounce_humidity_interval
+    type: unsigned long
+    restore_value: no
+    initial_value: '${debounce_time_ms}'
 
 # --- Hardware Interface ---
 i2c:
-  sda: GPIO17
-  scl: GPIO04
+  sda: ${i2c_sda}
+  scl: ${i2c_scl}
   frequency: 400kHz 
 
 # --- Sensors ---
@@ -127,38 +154,27 @@ text_sensor:
 sensor:
   - platform: sht4x
     temperature:
-      name: "$room_name temperature"
+      name: "${room_name} Temperature"
     humidity:
-      name: "$room_name Humidity"
+      name: "${room_name} Humidity"
       id: humidity_sensor
+      # On humidity change, execute debounce-aware script
       on_value:
-        - script.execute: update_fan_state
+        - script.execute: debounce_humidity_update
     update_interval: 30s
 
   - platform: adc
-    pin: GPIO34
-    name: "$room_name Illuminance"
+    pin: ${illuminance_adc_pin}
+    name: "${room_name} Illuminance"
     device_class: illuminance
     unit_of_measurement: lx
     update_interval: 30s
     filters:
       - multiply: 300
 
-  # - platform: adc
-  #   pin: GPIO34
-  #   name: "$room_name Illuminance"
-  #   device_class: illuminance
-  #   unit_of_measurement: lx
-  #   accuracy_decimals: 0
-  #   update_interval: 30s
-  #   attenuation: 0dB
-  #   samples: 10
-  #   filters:
-  #     - multiply: 100.0
-
   - platform: pulse_meter
     pin: 
-      number: GPIO16
+      number: ${fan_rpm_pin}
       mode: INPUT_PULLUP
     unit_of_measurement: 'RPM'
     id: fan_speed
@@ -215,27 +231,28 @@ sensor:
 # --- Outputs (PWM for Fan and LED) ---
 output:
   - platform: ledc
-    pin: GPIO18
+    pin: ${red_led_pin}
     id: red_led_pin
     inverted: true
   - platform: ledc
-    pin: GPIO19
+    pin: ${green_led_pin}
     id: green_led_pin
     inverted: true
   - platform: ledc
-    pin: GPIO21
+    pin: ${blue_led_pin}
     id: blue_led_pin
     inverted: true
   - platform: ledc
-    pin: GPIO22
+    pin: ${fan_pwm_pin}
     id: fan_pwm_output
-    frequency: 25kHz
+    frequency: ${fan_pwm_freq}
     inverted: false
 
 light:
   - platform: rgb
     id: rgb_led
     name: "Indicator"
+    icon: mdi:auto-mode
     red: red_led_pin
     green: green_led_pin
     blue: blue_led_pin
@@ -311,7 +328,7 @@ number:
     max_value: 90.0
     step: 1.0
     unit_of_measurement: '%'
-    initial_value: 65.0
+    initial_value: ${humidity_on_default}
     restore_value: True
     mode: SLIDER
     optimistic: True
@@ -323,7 +340,7 @@ number:
     max_value: 90.0
     step: 1.0
     unit_of_measurement: '%'
-    initial_value: 60.0
+    initial_value: ${humidity_off_default}
     restore_value: True
     mode: SLIDER
     optimistic: True
@@ -383,11 +400,25 @@ select:
 
 # --- Scripts and Automations ---
 script:
-  # This is the main script that controls all fan logic
+  # Debounced update for humidity-based fan state change
+  - id: debounce_humidity_update
+    mode: restart
+    then:
+      - lambda: |-
+          static unsigned long last_change = 0;
+          unsigned long now = millis();
+          if (now - last_change < id(debounce_humidity_interval)) {
+            ESP_LOGI("debounce", "Debounce in effect, skipping humidity-triggered state update");
+            return;
+          }
+          last_change = now;
+      - script.execute: update_fan_state
+
+  # Main fan state management script
   - id: update_fan_state
     mode: single
     then:
-      # CHANGE: Stop all timers before evaluating the state to prevent false triggers
+      # Stop all timers before evaluating the state to prevent false triggers
       - script.stop: manual_mode_timer
       - script.stop: burst_mode_timer
 
@@ -395,13 +426,14 @@ script:
           condition:
             lambda: 'return id(fan_mode_select).state == "Auto";'
           then:
+            # Auto mode: Check humidity and thresholds (debounced)
             - if:
                 condition:
                   lambda: |-
-                    // Condition to turn ON (or STAY ON) at high speed:
-                    // 1. Humidity is above the ON threshold.
+                    // Turn ON (or stay ON) at high speed if:
+                    // 1. Humidity > ON threshold
                     // OR
-                    // 2. The fan is already in high-speed mode, AND humidity has NOT yet dropped below the OFF threshold.
+                    // 2. Already in high-speed mode and humidity > OFF threshold
                     return id(humidity_sensor).state > id(humidity_threshold_on) ||
                            (id(is_in_high_speed_auto_mode) && (id(humidity_sensor).state > id(humidity_threshold_off)));
                 then:
@@ -418,6 +450,7 @@ script:
                       id: fan_pwm_output
                       level: !lambda "return id(duty_fan_speed).state / 100.0;"
                   - light.turn_on: { id: rgb_led, red: 0.0, green: 1.0, blue: 0.0, brightness: 1.0, effect: "Slow Pulse" }
+
       - if:
           condition:
             lambda: 'return id(fan_mode_select).state == "Duty";'
@@ -436,7 +469,7 @@ script:
                 id: fan_pwm_output
                 level: !lambda "return id(manual_fan_speed).state / 100.0;"
             - light.turn_on: { id: rgb_led, red: 0.0, green: 0.0, blue: 1.0, brightness: 1.0, effect: "None" }
-            # CHANGE: Execute the manual mode timer here
+            # Start manual mode timer
             - script.execute: manual_mode_timer
       - if:
           condition:
@@ -447,24 +480,24 @@ script:
                 id: fan_pwm_output
                 level: !lambda "return id(burst_fan_speed).state / 100.0;"
             - light.turn_on: { id: rgb_led, red: 1.0, green: 0.0, blue: 0.0, brightness: 1.0, effect: "Fast Pulse" }
-            # CHANGE: Execute the burst mode timer here
+            # Start burst mode timer
             - script.execute: burst_mode_timer
 
-  # Timer to revert from Manual mode to Auto after 10 minutes
+  # Timer to revert from Manual mode to Auto after specified time
   - id: manual_mode_timer
     mode: restart
     then:
-      - delay: 10min
+      - delay: ${fan_mode_manual_time}
       - logger.log: { format: "Manual mode timer expired. Reverting to 'Auto' mode.", level: INFO }
       - select.set:
           id: fan_mode_select
           option: "Auto"
 
-  # Timer to revert from Burst mode to Auto after 10 minutes
+  # Timer to revert from Burst mode to Auto after specified time
   - id: burst_mode_timer
     mode: restart
     then:
-      - delay: 10min
+      - delay: ${fan_mode_burst_time}
       - logger.log: { format: "Burst mode timer expired. Reverting to 'Auto' mode.", level: INFO }
       - select.set:
           id: fan_mode_select
