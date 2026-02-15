@@ -1,8 +1,8 @@
 substitutions:
   room_name: "Bath"
   device_name: h-esp-pax-01-fan
-  friendly_name: $device_name
-  version: "25.11.21.2"
+  friendly_name: h_esp_pax_01_fan
+  version: "2026.02.05.2"
 
   # User-adjustable parameters
   i2c_sda: GPIO17
@@ -19,7 +19,9 @@ substitutions:
   fan_mode_burst_time: "10min"
   humidity_on_default: "57.0"
   humidity_off_default: "50.0"
-  debounce_time_ms: "60000" # Debounce interval for humidity-triggered speed change
+  debounce_time_ms: "120000" # Debounce interval for humidity-triggered speed change
+
+  ha_external_hum: "sensor.h_hk_bedroom_ecobee_ts_current_humidity"
 
 esphome:
   name: ${device_name}
@@ -191,6 +193,60 @@ sensor:
           send_first_at: 3
           quantile: .1
 
+  - platform: homeassistant
+    id: external_hum
+    entity_id: ${ha_external_hum}
+    name: "External Humidity"    # Це ім'я для Home Assistant та Web Server
+    icon: "mdi:water-percent"    # Іконка допоможе візуально знайти
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    force_update: true
+    internal: False
+    on_value:
+      then:
+        - if:
+            condition:
+              # Використовуємо current_option() замість .state
+              lambda: |-
+                return id(fan_mode_select).current_option() == "Auto" || id(fan_mode_select).current_option() == "Duty";
+            then:
+              - if:
+                  condition:
+                    lambda: 'return x >= 70.0;'
+                  then:
+                    - if:
+                        condition:
+                          lambda: 'return id(fan_mode_select).current_option() != "Duty";'
+                        then:
+                          - logger.log: "Humidity high. Switching Auto -> Duty"
+                          - select.set:
+                              id: fan_mode_select
+                              option: "Duty"
+                  else:
+                    - if:
+                        condition:
+                          lambda: 'return x < 65.0 && id(fan_mode_select).current_option() == "Duty";'
+                        then:
+                          - logger.log: "Humidity normalized. Switching Duty -> Auto"
+                          - select.set:
+                              id: fan_mode_select
+                              option: "Auto"
+                    
+                    - if:
+                        condition:
+                          lambda: 'return id(fan_mode_select).current_option() == "Auto";'
+                        then:
+                          - lambda: |-
+                              float correction = 0;
+                              if (x >= 60.0) {
+                                correction = 10.0;
+                              }
+                              id(hum_correction).publish_state(correction);
+                              id(humidity_threshold_on) = id(humidity_threshold_on_raw).state + correction;
+                              id(humidity_threshold_off) = id(humidity_threshold_off_raw).state + correction;
+                          - script.execute: update_fan_state
+
+
   - platform: wifi_signal
     name: "WiFi Signal dB"
     id: wifi_signal_db
@@ -211,6 +267,7 @@ sensor:
   - platform: uptime
     name: Uptime Sensor
     id: uptime_sensor
+    internal: true
     update_interval: 60s
     on_raw_value:
       then:
@@ -351,43 +408,43 @@ number:
     restore_value: True
     mode: SLIDER
     optimistic: True
-  - platform: template
-    name: "Humidity Outside"
-    icon: mdi:water-percent
-    id: external_hum
-    optimistic: true
-    min_value: 0
-    max_value: 100
-    initial_value: 0
-    mode: BOX
-    step: 1
-    on_value:
-      then:
-        - if:
-            condition:
-              lambda: 'return id(fan_mode_select).current_option() != "Auto";'
-            then:
-              - logger.log: { format: "External humidity changed, but not in Auto mode. No action taken.", level: DEBUG }
-            else:
-              - if:
-                  condition:
-                    lambda: 'return id(external_hum).state >= 70;'
-                  then:
-                    - logger.log: { format: "High external humidity (>=70%%). Switching to 'Duty' mode.", level: INFO }
-                    - select.set:
-                        id: fan_mode_select
-                        option: "Duty"
-                  else:
-                    - lambda: |-
-                        float correction = 0;
-                        if (id(external_hum).state >= 60) {
-                          correction = 10;
-                        }
-                        id(hum_correction).publish_state(correction);
-                        id(humidity_threshold_on) = id(humidity_threshold_on_raw).state + correction;
-                        id(humidity_threshold_off) = id(humidity_threshold_off_raw).state + correction;
-                        ESP_LOGI("main", "External humidity updated. New ON threshold: %.1f, OFF threshold: %.1f", id(humidity_threshold_on), id(humidity_threshold_off));
-                    - script.execute: update_fan_state
+  # - platform: template
+  #   name: "Humidity Outside"
+  #   icon: mdi:water-percent
+  #   id: external_hum
+  #   optimistic: true
+  #   min_value: 0
+  #   max_value: 100
+  #   initial_value: 0
+  #   mode: BOX
+  #   step: 1
+  #   on_value:
+  #     then:
+  #       - if:
+  #           condition:
+  #             lambda: 'return id(fan_mode_select).current_option() != "Auto";'
+  #           then:
+  #             - logger.log: { format: "External humidity changed, but not in Auto mode. No action taken.", level: DEBUG }
+  #           else:
+  #             - if:
+  #                 condition:
+  #                   lambda: 'return id(external_hum).state >= 70;'
+  #                 then:
+  #                   - logger.log: { format: "High external humidity (>=70%%). Switching to 'Duty' mode.", level: INFO }
+  #                   - select.set:
+  #                       id: fan_mode_select
+  #                       option: "Duty"
+  #                 else:
+  #                   - lambda: |-
+  #                       float correction = 0;
+  #                       if (id(external_hum).state >= 60) {
+  #                         correction = 10;
+  #                       }
+  #                       id(hum_correction).publish_state(correction);
+  #                       id(humidity_threshold_on) = id(humidity_threshold_on_raw).state + correction;
+  #                       id(humidity_threshold_off) = id(humidity_threshold_off_raw).state + correction;
+  #                       ESP_LOGI("main", "External humidity updated. New ON threshold: %.1f, OFF threshold: %.1f", id(humidity_threshold_on), id(humidity_threshold_off));
+  #                   - script.execute: update_fan_state
 
 button:
   - platform: restart
